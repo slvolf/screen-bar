@@ -1,0 +1,45 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build: ScreenBar_CH32F103C8T6",
+      "type": "shell",
+      "command": "platformio run",
+      "options": {
+        "cwd": "${workspaceFolder:ScreenBar_CH32F103C8T6}"
+      },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Upload: ScreenBar_CH32F103C8T6",
+      "type": "shell",
+      "command": "platformio run --target upload",
+      "options": {
+        "cwd": "${workspaceFolder:ScreenBar_CH32F103C8T6}"
+      },
+      "group": "none",
+      "problemMatcher": []
+    },
+    {
+      "label": "Build: ScreenBar_ESP8266",
+      "type": "shell",
+      "command": "platformio run",
+      "options": {
+        "cwd": "${workspaceFolder:ScreenBar_ESP8266}"
+      },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Upload: ScreenBar_ESP8266",
+      "type": "shell",
+      "command": "platformio run --target upload",
+      "options": {
+        "cwd": "${workspaceFolder:ScreenBar_ESP8266}"
+      },
+      "group": "none",
+      "problemMatcher": []
+    }
+  ]
+}

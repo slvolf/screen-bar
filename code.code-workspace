@@ -1,0 +1,14 @@
+{
+  "folders": [
+    {
+      "path": "."
+    },
+    {
+      "path": "code/ScreenBar_CH32F103C8T6"
+    },
+    {
+      "path": "code/ScreenBar_ESP8266"
+    }
+  ],
+  "settings": {}
+}

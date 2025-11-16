@@ -1,0 +1,13 @@
+{
+  "editor.formatOnSave": true,
+  "files.exclude": {
+    "**/.pio": true,
+    "**/.pioenvs": true,
+    "**/.vscode": false
+  },
+  "search.exclude": {
+    "**/.pio": true,
+    "**/.pioenvs": true
+  },
+  "C_Cpp.default.configurationProvider": "platformio.platformio-ide"
+}
