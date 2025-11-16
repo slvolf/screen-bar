@@ -1,26 +1,25 @@
-#include "stm32f1xx.h"  /* CMSIS提供的外设寄存器结构体（兼容CH32） */
+#include "stm32f1xx.h"
 #include <stdint.h>
 
-/* 延时函数（约1ms） */
 void delay_ms(uint32_t ms) {
-    for (volatile uint32_t i = 0; i < ms * 8000; i++);
+    // 注意：时钟频率变为72MHz后，原延时循环需要调整（可按比例修改乘数）
+    // 72MHz下约为 ms * 72000（粗略估算，实际需精确校准）
+    for (volatile uint32_t i = 0; i < ms * 72000; i++);
 }
 
 int main(void) {
-    /* 1. 使能GPIOC时钟（使用CMSIS的RCC结构体） */
+    SystemInit_CH32();  // 初始化外部晶振和系统时钟（必须放在最前面）
+
+    // 使能GPIOC时钟
     RCC->APB2ENR |= RCC_APB2ENR_IOPCEN;
 
-    /* 2. 配置PC13为推挽输出（50MHz）
-       - GPIOx_CRH：端口配置高寄存器（引脚8-15）
-       - PC13对应bit20-23：MODE13=10（50MHz），CNF13=00（推挽输出）
-    */  
-    GPIOC->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);  // 清除原配置
+    // 配置PC13为推挽输出（50MHz）
+    GPIOC->CRH &= ~(GPIO_CRH_MODE13 | GPIO_CRH_CNF13);
     GPIOC->CRH |= GPIO_CRH_MODE13_1;  // MODE13=10（50MHz）
-    // CNF13默认00（推挽输出），无需额外配置
 
-    /* 3. 循环翻转PC13电平（LED闪烁） */
+    // 循环翻转PC13电平
     while (1) {
-        GPIOC->ODR ^= GPIO_ODR_ODR13;  // 翻转PC13（使用CMSIS的位定义）
+        GPIOC->ODR ^= GPIO_ODR_ODR13;
         delay_ms(500);
     }
 }
