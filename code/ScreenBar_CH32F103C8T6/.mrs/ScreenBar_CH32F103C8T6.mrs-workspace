@@ -1,0 +1,27 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "ScreenBar_CH32F103C8T6",
+			"path": "C:\\Users\\slvolf\\Documents\\MyFiles\\大学\\电子综合设计\\大二上台灯\\screen-bar\\code\\ScreenBar_CH32F103C8T6"
+		}
+	],
+	"settings": {
+		"mrs.workspace.type": "folder",
+		"mrs.init.arg": "",
+		"files.associations": {
+			"*.c": "c",
+			"*.h": "cpp",
+			"*.hxx": "cpp",
+			"*.hpp": "cpp",
+			"*.c++": "cpp",
+			"*.cpp": "cpp",
+			"*.cxx": "cpp",
+			"*.cc": "cpp",
+			"*.hh": "cpp",
+			"*.h++": "cpp"
+		}
+	}
+}
