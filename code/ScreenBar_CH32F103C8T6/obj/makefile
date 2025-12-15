@@ -38,34 +38,34 @@ endif
 
 # Add inputs and outputs from these tool invocations to the build variables 
 SECONDARY_FLASH += \
-CH32F103C8T.hex \
+ScreenBar_CH32F103C8T6.hex \
 
 SECONDARY_LIST += \
-CH32F103C8T.lst \
+ScreenBar_CH32F103C8T6.lst \
 
 SECONDARY_SIZE += \
-CH32F103C8T.siz \
+ScreenBar_CH32F103C8T6.siz \
 
 
 # All Target
 all: 
 	$(MAKE) --no-print-directory main-build 
 
-main-build: CH32F103C8T.elf secondary-outputs
+main-build: ScreenBar_CH32F103C8T6.elf secondary-outputs
 
 # Tool invocations
-CH32F103C8T.elf: $(OBJS) $(USER_OBJS_ESCAPE)
-	@	arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -mthumb-interwork -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -g -T "c:/Users/slvolf/Documents/MyFiles/大学/电子综合设计/大二上台灯/screen-bar/code/ScreenBar_CH32F103C8T6/CH32F103C8T/LD/CH32F103C8T6.ld" -nostartfiles -Xlinker --gc-sections -Wl,-Map,"CH32F103C8T.map" --specs=nano.specs --specs=nosys.specs -o "CH32F103C8T.elf" $(OBJS) $(LIBS)
-CH32F103C8T.hex: CH32F103C8T.elf
-	@	arm-none-eabi-objcopy -O ihex "CH32F103C8T.elf" "CH32F103C8T.hex"
-CH32F103C8T.lst: CH32F103C8T.elf
-	@	arm-none-eabi-objdump --source --all-headers --demangle --disassemble "CH32F103C8T.elf" > "CH32F103C8T.lst"
-CH32F103C8T.siz: CH32F103C8T.elf
-	arm-none-eabi-size --format=berkeley "CH32F103C8T.elf"
+ScreenBar_CH32F103C8T6.elf: $(OBJS) $(USER_OBJS_ESCAPE)
+	@	arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -mthumb-interwork -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -g -T "c:/Users/slvolf/Documents/MyFiles/大学/电子综合设计/大二上台灯/screen-bar/code/ScreenBar_CH32F103C8T6/LD/CH32F103C6T6.ld" -nostartfiles -Xlinker --gc-sections -Wl,-Map,"ScreenBar_CH32F103C8T6.map" --specs=nano.specs --specs=nosys.specs -o "ScreenBar_CH32F103C8T6.elf" $(OBJS) $(LIBS)
+ScreenBar_CH32F103C8T6.hex: ScreenBar_CH32F103C8T6.elf
+	@	arm-none-eabi-objcopy -O ihex "ScreenBar_CH32F103C8T6.elf" "ScreenBar_CH32F103C8T6.hex"
+ScreenBar_CH32F103C8T6.lst: ScreenBar_CH32F103C8T6.elf
+	@	arm-none-eabi-objdump --source --all-headers --demangle --disassemble "ScreenBar_CH32F103C8T6.elf" > "ScreenBar_CH32F103C8T6.lst"
+ScreenBar_CH32F103C8T6.siz: ScreenBar_CH32F103C8T6.elf
+	arm-none-eabi-size --format=berkeley "ScreenBar_CH32F103C8T6.elf"
 
 # Other Targets
 clean:
-	-$(RM) $(DIR_OBJS) $(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE) CH32F103C8T.elf
+	-$(RM) $(DIR_OBJS) $(SECONDARY_FLASH)$(SECONDARY_LIST)$(SECONDARY_SIZE) ScreenBar_CH32F103C8T6.elf
 	-$(RM) $(DIR_EXPANDS) $(CALLGRAPH_DOT)
 	-$(RM) $(DIR_DEPS)
 secondary-outputs: $(SECONDARY_FLASH) $(SECONDARY_LIST) $(SECONDARY_SIZE)

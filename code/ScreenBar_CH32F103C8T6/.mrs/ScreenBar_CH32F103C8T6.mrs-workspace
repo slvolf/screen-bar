@@ -9,8 +9,7 @@
 		}
 	],
 	"settings": {
-		"mrs.workspace.type": "folder",
-		"mrs.init.arg": "",
+		"mrs.workspace.type": "project",
 		"files.associations": {
 			"*.c": "c",
 			"*.h": "cpp",

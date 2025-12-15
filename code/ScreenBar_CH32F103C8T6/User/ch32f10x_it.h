@@ -33,8 +33,3 @@ void SysTick_Handler(void);
 #endif
 
 #endif /* __CH32F10x_IT_H */
-
-
-
-
-

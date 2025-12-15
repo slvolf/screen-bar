@@ -4,8 +4,8 @@
 		{
 			"type": "mrs-debugger",
 			"request": "launch",
-			"name": "CH32F103C8T",
-			"cwd": "c:\\Users\\slvolf\\Documents\\MyFiles\\大学\\电子综合设计\\大二上台灯\\screen-bar\\code\\ScreenBar_CH32F103C8T6\\CH32F103C8T",
+			"name": "ScreenBar_CH32F103C8T6",
+			"cwd": "c:\\Users\\slvolf\\Documents\\MyFiles\\大学\\电子综合设计\\大二上台灯\\screen-bar\\code\\ScreenBar_CH32F103C8T6",
 			"openOCDCfg": {
 				"useLocalOpenOCD": true,
 				"executable": "c:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/OpenOCD/OpenOCD/bin/openocd.exe",
@@ -37,8 +37,8 @@
 					"additionalCommands": []
 				},
 				"loadedFiles": {
-					"executableFile": "c:\\Users\\slvolf\\Documents\\MyFiles\\大学\\电子综合设计\\大二上台灯\\screen-bar\\code\\ScreenBar_CH32F103C8T6\\CH32F103C8T\\obj\\CH32F103C8T.elf",
-					"symbolFile": "c:\\Users\\slvolf\\Documents\\MyFiles\\大学\\电子综合设计\\大二上台灯\\screen-bar\\code\\ScreenBar_CH32F103C8T6\\CH32F103C8T\\obj\\CH32F103C8T.elf",
+					"executableFile": "c:\\Users\\slvolf\\Documents\\MyFiles\\大学\\电子综合设计\\大二上台灯\\screen-bar\\code\\ScreenBar_CH32F103C8T6\\obj\\ScreenBar_CH32F103C8T6.elf",
+					"symbolFile": "c:\\Users\\slvolf\\Documents\\MyFiles\\大学\\电子综合设计\\大二上台灯\\screen-bar\\code\\ScreenBar_CH32F103C8T6\\obj\\ScreenBar_CH32F103C8T6.elf",
 					"executableFileOffset": 0,
 					"symbolFileOffset": 0
 				},

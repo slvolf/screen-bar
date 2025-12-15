@@ -43,8 +43,8 @@
   <stringAttribute key="org.eclipse.cdt.debug.gdbjtag.core.symbolsOffset" value=""/>
   <stringAttribute key="org.eclipse.cdt.dsf.gdb.DEBUG_NAME" value="${eclipse_home}toolchain/arm-none-eabi-gcc/bin/arm-none-eabi-gdb.exe"/>
   <stringAttribute key="org.eclipse.cdt.launch.COREFILE_PATH" value=""/>
-  <stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/CH32F103C8T.elf"/>
-  <stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="CH32F103C8T"/>
+  <stringAttribute key="org.eclipse.cdt.launch.PROGRAM_NAME" value="obj/ScreenBar_CH32F103C8T6.elf"/>
+  <stringAttribute key="org.eclipse.cdt.launch.PROJECT_ATTR" value="ScreenBar_CH32F103C8T6"/>
   <stringAttribute key="org.eclipse.cdt.launch.PROJECT_BUILD_CONFIG_ID_ATTR" value=""/>
   <stringAttribute key="org.eclipse.dsf.launch.MEMORY_BLOCKS" value="&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; standalone=&quot;no&quot;?>&#xD;&#xA;&lt;memoryBlockExpressionList context=&quot;Context string&quot;/>&#xD;&#xA;"/>
   <stringAttribute key="process_factory_id" value="org.eclipse.cdt.dsf.gdb.GdbProcessFactory"/>
@@ -53,7 +53,7 @@
   <intAttribute key="org.eclipse.cdt.debug.gdbjtag.core.portNumber" value="3333"/>
   <intAttribute key="org.eclipse.cdt.launch.ATTR_BUILD_BEFORE_LAUNCH_ATTR" value="2"/>
   <listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS">
-    <listEntry value="/CH32F103C8T"/>
+    <listEntry value="/ScreenBar_CH32F103C8T6"/>
   </listAttribute>
   <listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_TYPES">
     <listEntry value="4"/>

@@ -10,6 +10,7 @@
 * microcontroller manufactured by Nanjing Qinheng Microelectronics.
 *******************************************************************************/
 #include "ch32f10x_it.h" 
+#include "ch32f10x.h"
 
 /*********************************************************************
  * @fn      NMI_Handler
@@ -121,8 +122,35 @@ void PendSV_Handler(void)
  *
  * @return  none
  */
+static __IO uint32_t TimingDelay = 0;
+void TimingDelay_Decrement(void) {
+  if (TimingDelay != 0x00) {
+    TimingDelay--;
+  }
+}
+extern __IO uint32_t g_systick_counter;
+void TimingDelay_Decrement(void);
 void SysTick_Handler(void)
 {
+  g_systick_counter++;
+  TimingDelay_Decrement();
+}
+
+
+/*********************************************************************
+ * @fn      TIM4_IRQHandler
+ *
+ * @brief   TIM4 更新中断：用于产生1ms系统节拍。
+ *
+ * @return  none
+ */
+void TIM4_IRQHandler(void)
+{
+  if (TIM_GetITStatus(TIM4, TIM_IT_Update) != RESET)
+  {
+    TIM_ClearITPendingBit(TIM4, TIM_IT_Update);
+    g_systick_counter++;
+  }
 }
 
 
