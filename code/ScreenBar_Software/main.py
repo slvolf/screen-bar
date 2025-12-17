@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# @Author   : 漫游slvolf https://space.bilibili.com/1054896810
+# @File     : main.py
+# @Project  : ScreenBar_Software
 import sys
 import socket
 import json
 import configparser
 import os
-# 统一PySide6导入（适配IDE索引）
-from PySide6 import QtWidgets, QtCore, QtGui
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFrame, QMessageBox,
@@ -41,6 +42,7 @@ class NetworkThread(QThread):
         self.port = port
         self.running = True
         self.client_socket = None
+        self.recv_buffer = ""
         self.comm = Communicate()
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -65,9 +67,21 @@ class NetworkThread(QThread):
                     self.comm.update_log.emit(f"连接异常: {str(e)}", "red")
                     continue
             try:
-                data = self.client_socket.recv(128).decode('utf-8').strip()
-                if data:
-                    self.parse_data(data)
+                chunk = self.client_socket.recv(256)
+                if not chunk:
+                    continue
+                try:
+                    text = chunk.decode('utf-8', errors='ignore')
+                except Exception:
+                    text = ''
+                if text:
+                    self.recv_buffer += text
+                    # 逐行处理，以'\n'为结束符，兼容'\r\n'
+                    while '\n' in self.recv_buffer:
+                        line, self.recv_buffer = self.recv_buffer.split('\n', 1)
+                        line = line.strip('\r')
+                        if line:
+                            self.parse_data(line)
             except socket.timeout:
                 continue
             except (ConnectionResetError, BrokenPipeError):
@@ -88,7 +102,8 @@ class NetworkThread(QThread):
                 status["touch"] = obj["touch_hint"]
             self.comm.update_status.emit(status)
         except json.JSONDecodeError:
-            self.comm.update_log.emit(f"无效数据: {data}", "red")
+            # 非 JSON 的原始文本，直接记录显示
+            self.comm.update_log.emit(f"收到数据: {data}", "black")
 
     def send_cmd(self, warm, white):
         if not self.client_socket:
@@ -117,7 +132,7 @@ class NetworkThread(QThread):
 class LightControlWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("灯光控制系统")
+        self.setWindowTitle("灯光控制")
         self.setFixedSize(650, 300)
         self.setStyleSheet("""
             QWidget {font-family: SimHei; font-size: 12px;}
@@ -147,7 +162,8 @@ class LightControlWindow(QMainWindow):
 
     def load_or_init_config(self):
         if not os.path.exists(CONFIG_PATH):
-            config["NETWORK"] = {"host": "0.0.0.0", "port": "8888"}
+            # 默认在所有网卡监听 9000 端口，匹配 ESP8266 的配置
+            config["NETWORK"] = {"host": "0.0.0.0", "port": "9000"}
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 config.write(f)
         config.read(CONFIG_PATH)
