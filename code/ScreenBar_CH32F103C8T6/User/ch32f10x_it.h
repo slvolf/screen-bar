@@ -1,20 +1,19 @@
-/********************************** (C) COPYRIGHT *******************************
- * File Name          : ch32f10x_it.h
- * Author             : WCH
- * Version            : V1.0.0
- * Date               : 2019/10/15
- * Description        : This file contains the headers of the interrupt handlers.
+/********************************** (C) COPYRIGHT
+ * ******************************* File Name          : ch32f10x_it.h Author
+ *         : WCH Version            : V1.0.0 Date               : 2019/10/15
+ * Description        : This file contains the headers of the interrupt
+ * handlers.
  *********************************************************************************
-* Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
-* Attention: This software (modified or not) and binary are used for 
-* microcontroller manufactured by Nanjing Qinheng Microelectronics.
-*******************************************************************************/
-#ifndef __CH32F10x_IT_H 
+ * Copyright (c) 2021 Nanjing Qinheng Microelectronics Co., Ltd.
+ * Attention: This software (modified or not) and binary are used for
+ * microcontroller manufactured by Nanjing Qinheng Microelectronics.
+ *******************************************************************************/
+#ifndef __CH32F10x_IT_H
 #define __CH32F10x_IT_H
 
 #ifdef __cplusplus
- extern "C" {
-#endif 
+extern "C" {
+#endif
 
 #include "ch32f10x.h"
 
@@ -27,6 +26,7 @@ void SVC_Handler(void);
 void DebugMon_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
+void USART1_IRQHandler(void);
 
 #ifdef __cplusplus
 }

@@ -10,14 +10,6 @@
  * microcontroller manufactured by Nanjing Qinheng Microelectronics.
  *******************************************************************************/
 
-/*
- *@Note 
- *ADC DMA sampling routines:
- *ADC channel 2 (PA2), the rule group channel obtains ADC conversion data 
- *for 1024 consecutive times through DMA.
- *
-*/
-
 #include "debug.h"
 #include "string.h"
 #include "stdlib.h"
@@ -47,13 +39,14 @@
 #define DIR_FLIP_TIME    2000        // 长按2秒翻转调光方向
 
 // I2C光感模块（BH1750）配置
-#define LIGHT_SENSOR_ADDR 0x46      // BH1750 I2C地址（0x23 << 1）
+#define LIGHT_SENSOR_ADDR 0x23      // BH1750 I2C地址（0x23 << 1）
 #define AUTO_LIGHT_INTERVAL 500     // 自动调光间隔（ms）
 
 // ESP8266串口通信配置
 #define UART_BAUDRATE    9600
 #define REPORT_INTERVAL  100        // 状态上报间隔（ms）
 #define JSON_BUF_LEN     256        // JSON缓冲区长度
+#define UART1_RX_BUF_SIZE 256        // UART1 环形缓冲区长度
 
 // 易失性关键字兼容定义
 #ifndef __IO
@@ -62,6 +55,13 @@
 
 // 全局SysTick计数器（毫秒级）
 __IO uint32_t g_systick_counter = 0;
+// UART1 最近一次接收字节的时间戳（ms），用于在接收期间暂缓发送，避免TX打断RX
+__IO uint32_t uart1_last_rx_tick = 0;
+
+// UART1 环形接收缓冲区（中断填充，主循环读取）
+static volatile u8 uart1_rx_buf[UART1_RX_BUF_SIZE] = {0};
+static volatile u16 uart1_rx_head = 0;
+static volatile u16 uart1_rx_tail = 0;
 
 // 全局状态变量
 u8 warm_duty = PWM_MIN_DUTY;    // 暖灯当前占空比
@@ -254,11 +254,6 @@ void Touch_Init(void) {
   GPIO_Init(TOUCH_PORT, &GPIO_InitStructure);
 }
 
-/*********************************************************************
- * @函数名    Touch_Detect
- * @功能      触控检测（短按=开关，长按=调光+方向翻转）
- * @返回值    无
- ********************************************************************/
 void Touch_Detect(void) {
   // 每次长按内只翻转一次方向
   static u8 warm_flipped_once = 0;
@@ -300,7 +295,7 @@ void Touch_Detect(void) {
         Set_PWM_Duty(PWM_WARM_CH, new_duty);
       }
     }
-  } else {  // 松开（非触摸）：从else对应==0改为对应==1
+  } else {  // 松开（非触摸）
     if (touch_warm_flag == 1) {
       u32 diff = SysTick_GetTick() - warm_touch_tick;
       if (diff < SHORT_PRESS_TIME) {  // 短按=开关
@@ -315,9 +310,8 @@ void Touch_Detect(void) {
     }
   }
 
-  // 白光触控检测（与暖光一致：长按翻转一次方向并持续步进，短按切换开关）
+  // 白光触控检测
   static u8 white_flipped_once = 0;
-
   u8 white_touch_state = GPIO_ReadInputDataBit(TOUCH_PORT, TOUCH_WHITE_PIN);
 
   if (white_touch_state == 1) {  // 按下（触摸中）
@@ -517,6 +511,7 @@ void Auto_Light_Adjust(void) {
 void UART1_Init(u32 baudrate) {
   GPIO_InitTypeDef GPIO_InitStructure = {0};
   USART_InitTypeDef USART_InitStructure = {0};
+  NVIC_InitTypeDef NVIC_InitStructure = {0};
 
   // 使能USART1和GPIOA时钟
   RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1 | RCC_APB2Periph_GPIOA, ENABLE);
@@ -539,35 +534,59 @@ void UART1_Init(u32 baudrate) {
   USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
   USART_InitStructure.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
   USART_Init(USART1, &USART_InitStructure);
+  USART_ITConfig(USART1, USART_IT_RXNE, ENABLE); // 使能接收中断
+
+  NVIC_InitStructure.NVIC_IRQChannel = USART1_IRQn;
+  NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
+  NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+  NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+  NVIC_Init(&NVIC_InitStructure);
+
   USART_Cmd(USART1, ENABLE);
+}
+
+/* 将远端占空比写入并按需立即更新 */
+static void Apply_Remote_PWM(u8 warm, u8 white) {
+  if (warm > PWM_MAX_DUTY) warm = PWM_MAX_DUTY;
+  if (warm < PWM_MIN_DUTY) warm = PWM_MIN_DUTY;
+  if (white > PWM_MAX_DUTY) white = PWM_MAX_DUTY;
+  if (white < PWM_MIN_DUTY) white = PWM_MIN_DUTY;
+
+  warm_last_duty = warm;
+  white_last_duty = white;
+
+  if (warm_switch) {
+    Set_PWM_Duty(PWM_WARM_CH, warm);
+  }
+  if (white_switch) {
+    Set_PWM_Duty(PWM_WHITE_CH, white);
+  }
+
+  // printf("[OK] warm=%u white=%u\r\n", warm, white);
 }
 
 /*********************************************************************
  * @函数名    Parse_ESP8266_Cmd
- * @功能      解析ESP8266下发的JSON指令
+ * @功能      解析ESP8266下发的指令（JSON或简化PWM格式）
  * @参数      cmd - 指令字符串
  * @返回值    无
  ********************************************************************/
 void Parse_ESP8266_Cmd(char *cmd) {
   char *p = NULL;
+
   // 解析设置PWM指令：{"cmd":"set_pwm","warm":20,"white":30}
   if (strstr(cmd, "\"cmd\":\"set_pwm\"")) {
+    u8 warm = warm_last_duty;
+    u8 white = white_last_duty;
     p = strstr(cmd, "\"warm\":");
     if (p) {
-      u8 warm = atoi(p + 7);
-      if (warm_switch == 1) {
-        Set_PWM_Duty(PWM_WARM_CH, warm);
-      }
-      warm_last_duty = warm;
+      warm = (u8)atoi(p + 7);
     }
     p = strstr(cmd, "\"white\":");
     if (p) {
-      u8 white = atoi(p + 8);
-      if (white_switch == 1) {
-        Set_PWM_Duty(PWM_WHITE_CH, white);
-      }
-      white_last_duty = white;
+      white = (u8)atoi(p + 8);
     }
+    Apply_Remote_PWM(warm, white);
   }
   // 解析自动调光指令：{"cmd":"auto_light","enable":1}
   else if (strstr(cmd, "\"cmd\":\"auto_light\"")) {
@@ -587,6 +606,13 @@ void Parse_ESP8266_Cmd(char *cmd) {
       Light_Switch(1, atoi(p + 8));
     }
   }
+  // 新增简化格式：PWM:<warm>,<white> 例："PWM:35,80"
+  else if (strncmp(cmd, "PWM:", 4) == 0) {
+    int warm = 0, white = 0;
+    if (sscanf(cmd + 4, "%d,%d", &warm, &white) == 2) {
+      Apply_Remote_PWM((u8)warm, (u8)white);
+    }
+  }
 }
 
 /*********************************************************************
@@ -598,17 +624,33 @@ void UART1_Receive_Cmd(void) {
   static char cmd_buf[JSON_BUF_LEN] = {0};
   static u8 buf_idx = 0;
 
-  if (USART_GetFlagStatus(USART1, USART_FLAG_RXNE) != RESET) {
-    u8 data = USART_ReceiveData(USART1);
-    // 指令结束符（换行/回车）
-    if ((data == '\n' || data == '\r') && buf_idx > 0) {
-      cmd_buf[buf_idx] = '\0';
-      Parse_ESP8266_Cmd(cmd_buf);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-      buf_idx = 0;  // 重置缓冲区
-    } else if (buf_idx < JSON_BUF_LEN - 1) {
+  // 从环形缓冲读取（由 USART1_IRQHandler 填充），确保不中断丢字节
+  // u16 batch_len = 0;
+  while (uart1_rx_head != uart1_rx_tail) {
+    u8 data = uart1_rx_buf[uart1_rx_tail];
+    uart1_rx_tail = (uart1_rx_tail + 1) % UART1_RX_BUF_SIZE;
+    // batch_len++;
+
+    if (data == '\r' || data == '\n') {
+      if (buf_idx > 0) {
+        cmd_buf[buf_idx] = '\0';
+        Parse_ESP8266_Cmd(cmd_buf);
+        buf_idx = 0;
+      }
+      continue;
+    }
+
+    if (buf_idx < (JSON_BUF_LEN - 1)) {
       cmd_buf[buf_idx++] = data;
+    } else {
+      // 缓冲溢出则丢弃本条指令
+      buf_idx = 0;
     }
   }
+
+  // if (batch_len > 0) {
+  //   printf("[U1RX] batch=%u buf_len=%u\r\n", (unsigned)batch_len, (unsigned)buf_idx);
+  // }
 }
 
 /*********************************************************************
@@ -618,6 +660,10 @@ void UART1_Receive_Cmd(void) {
  ********************************************************************/
 void UART1_Send_Status(void) {
   char json[JSON_BUF_LEN] = {0};
+  // 接收优先：若最近250ms内有接收活动，则跳过本次上报，避免TX打断RX
+  if ((SysTick_GetTick() - uart1_last_rx_tick) < 250) {
+    return;
+  }
   // 构造JSON字符串
   sprintf(json,
           "{\"pwm\":{\"warm\":%d,\"white\":%d},"
@@ -706,5 +752,24 @@ int main(void) {
     }
 
     Delay_Ms(10);
+  }
+}
+
+// USART1 接收中断：填充环形缓冲，避免主循环阻塞导致丢字节
+void USART1_IRQHandler(void) {
+  if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
+    u8 data = USART_ReceiveData(USART1);
+    uart1_last_rx_tick = SysTick_GetTick();
+
+    u16 next_head = (uart1_rx_head + 1) % UART1_RX_BUF_SIZE;
+    if (next_head != uart1_rx_tail) {
+      uart1_rx_buf[uart1_rx_head] = data;
+      uart1_rx_head = next_head;
+    } else {
+      // 缓冲满则丢弃最旧数据，确保不阻塞硬件
+      uart1_rx_tail = (uart1_rx_tail + 1) % UART1_RX_BUF_SIZE;
+      uart1_rx_buf[uart1_rx_head] = data;
+      uart1_rx_head = next_head;
+    }
   }
 }
