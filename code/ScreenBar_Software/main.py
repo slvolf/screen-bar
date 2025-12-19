@@ -148,6 +148,8 @@ class LightControlWindow(QMainWindow):
         self.touch_display = None
         self.warm_slider = None
         self.white_slider = None
+        self.warm_value_label = None
+        self.white_value_label = None
 
         self.load_or_init_config()
         self.build_ui()
@@ -218,8 +220,10 @@ class LightControlWindow(QMainWindow):
             slider.valueChanged.connect(self.send_control_cmd)  # 实时发送
             if is_warm:
                 self.warm_slider = slider
+                self.warm_value_label = value_label
             else:
                 self.white_slider = slider
+                self.white_value_label = value_label
             row.addWidget(label)
             row.addWidget(slider, 1)
             row.addWidget(value_label)
@@ -244,9 +248,13 @@ class LightControlWindow(QMainWindow):
         if "warm" in status:
             v = max(MIN_PWM, min(MAX_PWM, int(status["warm"])))
             self.set_slider_value(self.warm_slider, v)
+            if self.warm_value_label:
+                self.warm_value_label.setText(str(v))
         if "white" in status:
             v = max(MIN_PWM, min(MAX_PWM, int(status["white"])))
             self.set_slider_value(self.white_slider, v)
+            if self.white_value_label:
+                self.white_value_label.setText(str(v))
         if "ambient" in status:
             self.ambient_display.setText(str(status["ambient"]))
         if "touch" in status:

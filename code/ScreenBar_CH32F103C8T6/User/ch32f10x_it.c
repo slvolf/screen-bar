@@ -12,6 +12,9 @@
 #include "ch32f10x_it.h" 
 #include "ch32f10x.h"
 
+// 白光软件PWM：由Main.c提供占空比与引脚定义
+extern volatile u8 g_white_soft_duty;
+
 /*********************************************************************
  * @fn      NMI_Handler
  *
@@ -150,6 +153,58 @@ void TIM4_IRQHandler(void)
   {
     TIM_ClearITPendingBit(TIM4, TIM_IT_Update);
     g_systick_counter++;
+  }
+}
+
+/*********************************************************************
+ * @fn      TIM3_IRQHandler
+ *
+ * @brief   TIM3中断：用于PA4白光软件PWM(10kHz)
+ *          - Update中断：每个周期开始拉高(或保持低/高)
+ *          - CC1中断：到达占空比关断点拉低
+ *
+ * @return  none
+ */
+void TIM3_IRQHandler(void)
+{
+  // 周期开始
+  if (TIM_GetITStatus(TIM3, TIM_IT_Update) != RESET)
+  {
+    TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
+    // 避免旧的CC1挂起影响本周期
+    TIM_ClearITPendingBit(TIM3, TIM_IT_CC1);
+
+    u8 duty = g_white_soft_duty;
+    if (duty == 0)
+    {
+      GPIO_ResetBits(GPIOA, GPIO_Pin_4);
+      TIM_ITConfig(TIM3, TIM_IT_CC1, DISABLE);
+    }
+    else if (duty >= 100)
+    {
+      GPIO_SetBits(GPIOA, GPIO_Pin_4);
+      TIM_ITConfig(TIM3, TIM_IT_CC1, DISABLE);
+    }
+    else
+    {
+      // 关断点 = duty% * 周期ticks，避免CCR=0导致立即比较
+      u16 arr = (u16)TIM3->ATRLR;
+      u16 period_ticks = (u16)(arr + 1U);
+      u16 on_ticks = (u16)(((u32)duty * (u32)period_ticks) / 100U);
+      if (on_ticks < 1U) on_ticks = 1U;
+      if (on_ticks > arr) on_ticks = arr;
+
+      GPIO_SetBits(GPIOA, GPIO_Pin_4);
+      TIM_SetCompare1(TIM3, on_ticks);
+      TIM_ITConfig(TIM3, TIM_IT_CC1, ENABLE);
+    }
+  }
+
+  // 关断点
+  if (TIM_GetITStatus(TIM3, TIM_IT_CC1) != RESET)
+  {
+    TIM_ClearITPendingBit(TIM3, TIM_IT_CC1);
+    GPIO_ResetBits(GPIOA, GPIO_Pin_4);
   }
 }
 

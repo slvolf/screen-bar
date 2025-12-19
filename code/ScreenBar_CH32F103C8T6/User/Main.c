@@ -20,14 +20,24 @@
 #endif
 #define SYS_CLK          72000000U   // 目标系统时钟：72MHz
 
-// PWM配置（COB灯带20kHz无频闪）
-#define PWM_FREQ         20000U      // PWM频率：20kHz（无频闪）
-#define PWM_ARR          899U        // 72MHz/(3+1)/900 = 20kHz
+// PWM配置
+// 暖灯：TIM2硬件PWM(PA3)
+// 白光：PA4无硬件PWM复用，使用TIM3中断软件PWM
+#define PWM_FREQ         10000U      // 目标PWM频率：10kHz
+#define PWM_ARR          1799U       // 72MHz/(3+1)/1800 = 10kHz (TIM2)
 #define PWM_WARM_CH      TIM_Channel_4  // PA3-TIM2 CH4（暖灯）
-#define PWM_WHITE_CH     TIM_Channel_1  // PA4-TIM3 CH1（白光）
+#define PWM_WHITE_CH     TIM_Channel_1  // 白光通道标识（软件PWM）
 #define PWM_MIN_DUTY     3           // 最小占空比（微弱光）
 #define PWM_MAX_DUTY     100         // 最大占空比
 #define PWM_STEP         1           // 调光步进值
+
+// 白光软件PWM参数：TIM3 1MHz计数(1us/tick)，周期100us(10kHz)
+#define WHITE_SOFTPWM_TIM       TIM3
+#define WHITE_SOFTPWM_IRQn      TIM3_IRQn
+#define WHITE_SOFTPWM_PSC       (72 - 1)   // 72MHz/72 = 1MHz
+#define WHITE_SOFTPWM_ARR       (100 - 1)  // 100us周期 -> 10kHz
+#define WHITE_GPIO_PORT         GPIOA
+#define WHITE_GPIO_PIN          GPIO_Pin_4
 
 // 触控模块（TTP223）配置
 #define TOUCH_WARM_PIN   GPIO_Pin_14 // PB14（暖灯触控）
@@ -39,14 +49,33 @@
 #define DIR_FLIP_TIME    2000        // 长按2秒翻转调光方向
 
 // I2C光感模块（BH1750）配置
-#define LIGHT_SENSOR_ADDR 0x23      // BH1750 I2C地址（0x23 << 1）
+// 改用软件模拟I2C，引脚定义如下：
+// 标准I2C1引脚：PB6-SCL, PB7-SDA
+#define I2C_SCL_PIN      GPIO_Pin_6
+#define I2C_SDA_PIN      GPIO_Pin_7
+#define I2C_GPIO_PORT    GPIOB
+#define I2C_RCC_PORT     RCC_APB2Periph_GPIOB
+
+#define LIGHT_SENSOR_ADDR_7BIT 0x23 // ADDR=LOW→0x23，ADDR=HIGH→0x5C
+#define LIGHT_SENSOR_ADDR      (LIGHT_SENSOR_ADDR_7BIT << 1)
 #define AUTO_LIGHT_INTERVAL 500     // 自动调光间隔（ms）
+
+// 软件I2C宏定义（经典实现：SCL/SDA为开漏输出，上拉电阻拉高；读ACK/读数据时将SDA切为输入）
+#define I2C_SCL_H      GPIO_SetBits(I2C_GPIO_PORT, I2C_SCL_PIN)
+#define I2C_SCL_L      GPIO_ResetBits(I2C_GPIO_PORT, I2C_SCL_PIN)
+#define I2C_SDA_H      GPIO_SetBits(I2C_GPIO_PORT, I2C_SDA_PIN)
+#define I2C_SDA_L      GPIO_ResetBits(I2C_GPIO_PORT, I2C_SDA_PIN)
+#define I2C_SDA_READ   GPIO_ReadInputDataBit(I2C_GPIO_PORT, I2C_SDA_PIN)
+
+// BH1750/I2C调试开关
+#define BH1750_DEBUG          1
+#define BH1750_DEBUG_VERBOSE  1     // 置1会打印更多“成功路径”的细节
 
 // ESP8266串口通信配置
 #define UART_BAUDRATE    9600
 #define REPORT_INTERVAL  100        // 状态上报间隔（ms）
 #define JSON_BUF_LEN     256        // JSON缓冲区长度
-#define UART1_RX_BUF_SIZE 256        // UART1 环形缓冲区长度
+#define UART1_RX_BUF_SIZE 256       // UART1 环形缓冲区长度
 
 // 易失性关键字兼容定义
 #ifndef __IO
@@ -98,6 +127,197 @@ void UART1_Receive_Cmd(void);
 void UART1_Send_Status(void);
 void RGB_Reserve_Init(void);
 
+// 白光软件PWM：中断读取该占空比(0-100)
+volatile u8 g_white_soft_duty = PWM_MIN_DUTY;
+
+#if BH1750_DEBUG
+#define BH1750_LOG(fmt, ...) \
+  do { \
+    printf("[BH1750 %lu] " fmt "\r\n", (unsigned long)SysTick_GetTick(), ##__VA_ARGS__); \
+  } while (0)
+#else
+#define BH1750_LOG(...) do { } while (0)
+#endif
+
+// 软件I2C延时 (放慢速度，确保信号稳定)
+static void Soft_I2C_Delay(void) {
+    Delay_Us(50); // 增加延时到50us (约10kHz)，适应10k弱上拉
+}
+
+static void Soft_I2C_SDA_OutOD(void) {
+  GPIO_InitTypeDef GPIO_InitStructure = {0};
+  GPIO_InitStructure.GPIO_Pin = I2C_SDA_PIN;
+  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_OD;
+  GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+  GPIO_Init(I2C_GPIO_PORT, &GPIO_InitStructure);
+}
+
+static void Soft_I2C_SDA_InPU(void) {
+  GPIO_InitTypeDef GPIO_InitStructure = {0};
+  GPIO_InitStructure.GPIO_Pin = I2C_SDA_PIN;
+  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
+  GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+  GPIO_Init(I2C_GPIO_PORT, &GPIO_InitStructure);
+}
+
+static void Soft_I2C_GPIO_Init(void) {
+  GPIO_InitTypeDef GPIO_InitStructure = {0};
+
+  RCC_APB2PeriphClockCmd(I2C_RCC_PORT, ENABLE);
+
+  // SCL：开漏输出
+  GPIO_InitStructure.GPIO_Pin = I2C_SCL_PIN;
+  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_OD;
+  GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+  GPIO_Init(I2C_GPIO_PORT, &GPIO_InitStructure);
+
+  // SDA：默认开漏输出（读ACK/读数据时会切换为输入）
+  Soft_I2C_SDA_OutOD();
+
+  // 释放总线为高
+  I2C_SCL_H;
+  I2C_SDA_H;
+  Soft_I2C_Delay();
+}
+
+// 软件I2C起始信号
+static void Soft_I2C_Start(void) {
+  Soft_I2C_SDA_OutOD();
+    I2C_SDA_H;
+    I2C_SCL_H;
+    Soft_I2C_Delay();
+    I2C_SDA_L;
+    Soft_I2C_Delay();
+    I2C_SCL_L;
+}
+
+// 软件I2C停止信号
+static void Soft_I2C_Stop(void) {
+  Soft_I2C_SDA_OutOD();
+    I2C_SDA_L;
+    I2C_SCL_H;
+    Soft_I2C_Delay();
+    I2C_SDA_H;
+    Soft_I2C_Delay();
+}
+
+// 软件I2C等待应答
+static u8 Soft_I2C_WaitAck(void) {
+    u8 ack = 0;
+  Soft_I2C_SDA_InPU(); // 释放SDA
+    Soft_I2C_Delay();
+    I2C_SCL_H;
+    Soft_I2C_Delay();
+    if (I2C_SDA_READ) {
+        ack = 1; // NACK
+    } else {
+        ack = 0; // ACK
+    }
+    I2C_SCL_L;
+  Soft_I2C_SDA_OutOD();
+    return ack;
+}
+
+// 软件I2C发送字节
+static void Soft_I2C_SendByte(u8 byte) {
+    u8 i;
+  Soft_I2C_SDA_OutOD();
+    for (i = 0; i < 8; i++) {
+        if (byte & 0x80) {
+            I2C_SDA_H;
+        } else {
+            I2C_SDA_L;
+        }
+        byte <<= 1;
+        Soft_I2C_Delay();
+        I2C_SCL_H;
+        Soft_I2C_Delay();
+        I2C_SCL_L;
+        Soft_I2C_Delay();
+    }
+}
+
+// 软件I2C读取字节
+static u8 Soft_I2C_ReadByte(u8 ack) {
+    u8 i, byte = 0;
+  Soft_I2C_SDA_InPU();
+    for (i = 0; i < 8; i++) {
+        I2C_SCL_H;
+        Soft_I2C_Delay(); // 等待SCL上升
+        byte <<= 1;
+        if (I2C_SDA_READ) {
+            byte |= 0x01;
+        }
+        I2C_SCL_L;
+        Soft_I2C_Delay();
+    }
+    
+    // 发送应答
+  Soft_I2C_SDA_OutOD();
+    if (ack) {
+        I2C_SDA_L; // ACK
+    } else {
+        I2C_SDA_H; // NACK
+    }
+    Soft_I2C_Delay();
+    I2C_SCL_H;
+    Soft_I2C_Delay();
+    I2C_SCL_L;
+    I2C_SDA_H; // 释放
+    
+    return byte;
+}
+
+// 全局变量：探测到的8位地址（写地址）
+static u8 g_bh1750_addr = LIGHT_SENSOR_ADDR;
+
+static int BH1750_Ping(u8 addr) {
+  Soft_I2C_Start();
+  Soft_I2C_SendByte(addr);
+  if (Soft_I2C_WaitAck()) {
+    Soft_I2C_Stop();
+    return 0;
+  }
+  Soft_I2C_Stop();
+  return 1;
+}
+
+static int BH1750_WriteCmd(u8 cmd) {
+  Soft_I2C_Start();
+  Soft_I2C_SendByte(g_bh1750_addr);
+  if (Soft_I2C_WaitAck()) { Soft_I2C_Stop(); return 0; }
+  Soft_I2C_SendByte(cmd);
+  if (Soft_I2C_WaitAck()) { Soft_I2C_Stop(); return 0; }
+  Soft_I2C_Stop();
+  return 1;
+}
+
+static int BH1750_ReadRaw(u16 *raw) {
+  u8 hi = 0, lo = 0;
+  Soft_I2C_Start();
+  Soft_I2C_SendByte(g_bh1750_addr | 0x01);
+  if (Soft_I2C_WaitAck()) { Soft_I2C_Stop(); return 0; }
+  hi = Soft_I2C_ReadByte(1);
+  lo = Soft_I2C_ReadByte(0);
+  Soft_I2C_Stop();
+  *raw = ((u16)hi << 8) | lo;
+  return 1;
+}
+
+static int BH1750_Detect(void) {
+  if (BH1750_Ping(0x23 << 1)) { g_bh1750_addr = (0x23 << 1); return 1; }
+  if (BH1750_Ping(0x5C << 1)) { g_bh1750_addr = (0x5C << 1); return 1; }
+  return 0;
+}
+
+static void BH1750_SelfTestOnce(void) {
+  if (!BH1750_Detect()) {
+    BH1750_LOG("FAIL: No sensor found!");
+    return;
+  }
+  BH1750_LOG("FOUND Sensor addr=0x%02X", g_bh1750_addr >> 1);
+}
+
 /*********************************************************************
  * @函数名    SysTick_GetTick
  * @功能      获取系统运行时间（毫秒）
@@ -139,25 +359,33 @@ void SystemClock_Config_8MHz(void) {
 
 /*********************************************************************
  * @函数名    PWM_Init
- * @功能      初始化20kHz无频闪PWM（PA3暖灯/PA4白光）
+ * @功能      初始化PWM：暖灯TIM2硬件PWM(PA3)，白光PA4软件PWM(TIM3中断)
  * @返回值    无
  ********************************************************************/
 void PWM_Init(void) {
   GPIO_InitTypeDef GPIO_InitStructure = {0};
   TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure = {0};
   TIM_OCInitTypeDef TIM_OCInitStructure = {0};
+  NVIC_InitTypeDef NVIC_InitStructure = {0};
 
   // 使能TIM2/TIM3和GPIOA时钟
   RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2 | RCC_APB1Periph_TIM3, ENABLE);
   RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO, ENABLE);
 
-  // 配置PA3(TIM2 CH4)和PA4(TIM3 CH1)为复用推挽输出
-  GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3 | GPIO_Pin_4;
+  // PA3：TIM2 CH4 硬件PWM(复用推挽)
+  GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3;
   GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
   GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
   GPIO_Init(GPIOA, &GPIO_InitStructure);
 
-  // TIM2时基配置（20kHz）
+  // PA4：白光软件PWM(普通推挽输出)
+  GPIO_InitStructure.GPIO_Pin = WHITE_GPIO_PIN;
+  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+  GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+  GPIO_Init(WHITE_GPIO_PORT, &GPIO_InitStructure);
+  GPIO_ResetBits(WHITE_GPIO_PORT, WHITE_GPIO_PIN);
+
+  // TIM2时基配置（暖灯硬件PWM）
   TIM_TimeBaseStructure.TIM_Prescaler = 3;
   TIM_TimeBaseStructure.TIM_Period = PWM_ARR;
   TIM_TimeBaseStructure.TIM_ClockDivision = 0;
@@ -172,23 +400,40 @@ void PWM_Init(void) {
   TIM_OC4Init(TIM2, &TIM_OCInitStructure);
   TIM_OC4PreloadConfig(TIM2, TIM_OCPreload_Enable);
 
-  // TIM3时基配置（与TIM2相同）
-  TIM_TimeBaseInit(TIM3, &TIM_TimeBaseStructure);
+  // TIM3：白光软件PWM时基(1MHz计数，10kHz周期)
+  TIM_DeInit(WHITE_SOFTPWM_TIM);
+  TIM_TimeBaseStructure.TIM_Prescaler = WHITE_SOFTPWM_PSC;
+  TIM_TimeBaseStructure.TIM_Period = WHITE_SOFTPWM_ARR;
+  TIM_TimeBaseStructure.TIM_ClockDivision = 0;
+  TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+  TIM_TimeBaseInit(WHITE_SOFTPWM_TIM, &TIM_TimeBaseStructure);
 
-  // 配置TIM3 CH1（白光）PWM模式1
-  TIM_OC1Init(TIM3, &TIM_OCInitStructure);
-  TIM_OC1PreloadConfig(TIM3, TIM_OCPreload_Enable);
+  // 使用CH1比较中断作为“关断点”，不需要输出到引脚
+  TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_Timing;
+  TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Disable;
+  TIM_OCInitStructure.TIM_Pulse = 0;
+  TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High;
+  TIM_OC1Init(WHITE_SOFTPWM_TIM, &TIM_OCInitStructure);
+
+  TIM_ClearITPendingBit(WHITE_SOFTPWM_TIM, TIM_IT_Update | TIM_IT_CC1);
+  TIM_ITConfig(WHITE_SOFTPWM_TIM, TIM_IT_Update, ENABLE);
+  TIM_ITConfig(WHITE_SOFTPWM_TIM, TIM_IT_CC1, ENABLE);
+
+  NVIC_InitStructure.NVIC_IRQChannel = WHITE_SOFTPWM_IRQn;
+  NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 2;
+  NVIC_InitStructure.NVIC_IRQChannelSubPriority = 2;
+  NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+  NVIC_Init(&NVIC_InitStructure);
 
   // 使能TIM2/TIM3
   TIM_ARRPreloadConfig(TIM2, ENABLE);
   TIM_Cmd(TIM2, ENABLE);
-  TIM_ARRPreloadConfig(TIM3, ENABLE);
-  TIM_Cmd(TIM3, ENABLE);
+  TIM_Cmd(WHITE_SOFTPWM_TIM, ENABLE);
 }
 
 /*********************************************************************
  * @函数名    Set_PWM_Duty
- * @功能      设置PWM占空比（限制5%-100%）
+ * @功能      设置PWM占空比（限制3%-100%）
  * @参数      ch - TIM_Channel_4(暖灯)/TIM_Channel_1(白光)
  *            duty - 目标占空比（0-100）
  * @返回值    无
@@ -202,12 +447,13 @@ void Set_PWM_Duty(u8 ch, u8 duty) {
     duty = PWM_MAX_DUTY;
   }
   
-  u16 ccr_val = (duty * PWM_ARR) / 100;
   if (ch == PWM_WARM_CH) {
+    u16 ccr_val = (duty * PWM_ARR) / 100;
     TIM_SetCompare4(TIM2, ccr_val);
     warm_duty = duty;
   } else if (ch == PWM_WHITE_CH) {
-    TIM_SetCompare1(TIM3, ccr_val);
+    // 白光：软件PWM仅更新占空比，由TIM3中断驱动PA4
+    g_white_soft_duty = duty;
     white_duty = duty;
   }
 }
@@ -232,7 +478,8 @@ void Light_Switch(u8 type, u8 state) {
     white_switch = state;
     if (state == 0) {  // 关闭
       white_last_duty = white_duty;
-      TIM_SetCompare1(TIM3, 0);
+      g_white_soft_duty = 0;
+      GPIO_ResetBits(WHITE_GPIO_PORT, WHITE_GPIO_PIN);
     } else {  // 打开
       Set_PWM_Duty(PWM_WHITE_CH, white_last_duty);
     }
@@ -393,35 +640,10 @@ void TickTimer_Init(void) {
   NVIC_Init(&NVIC_InitStructure);
 }
 
-/*********************************************************************
- * @函数名    I2C1_Init
- * @功能      初始化I2C1（PB6=SCL，PB7=SDA）
- * @返回值    无
- ********************************************************************/
+
 void I2C1_Init(void) {
-  GPIO_InitTypeDef GPIO_InitStructure = {0};
-  I2C_InitTypeDef I2C_InitStructure = {0};
-
-  // 使能GPIOB和I2C1时钟
-  RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
-  RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C1, ENABLE);
-
-  // 配置PB6(SCL)和PB7(SDA)为开漏复用输出
-  GPIO_InitStructure.GPIO_Pin = GPIO_Pin_6 | GPIO_Pin_7;
-  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_OD;
-  GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-  GPIO_Init(GPIOB, &GPIO_InitStructure);
-
-  // I2C1配置（100kHz）
-  I2C_DeInit(I2C1);
-  I2C_InitStructure.I2C_Mode = I2C_Mode_I2C;
-  I2C_InitStructure.I2C_DutyCycle = I2C_DutyCycle_2;
-  I2C_InitStructure.I2C_OwnAddress1 = 0x00;
-  I2C_InitStructure.I2C_Ack = I2C_Ack_Enable;
-  I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
-  I2C_InitStructure.I2C_ClockSpeed = 100000;
-  I2C_Init(I2C1, &I2C_InitStructure);
-  I2C_Cmd(I2C1, ENABLE);
+  Soft_I2C_GPIO_Init();
+  BH1750_LOG("Soft I2C Init OK");
 }
 
 /*********************************************************************
@@ -433,39 +655,34 @@ u16 Read_Ambient_Light(void) {
   u8 buf[2] = {0};
   u16 lux = 0;
 
-  // 发送测量指令（连续高分辨率模式）
-  I2C_GenerateSTART(I2C1, ENABLE);
-  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT));
+  if (!BH1750_Detect()) {
+    return ambient_light;
+  }
 
-  I2C_Send7bitAddress(I2C1, LIGHT_SENSOR_ADDR, I2C_Direction_Transmitter);
-  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED));
+  // 1. Power On
+  if (!BH1750_WriteCmd(0x01)) return ambient_light;
+  Delay_Ms(10);
 
-  I2C_SendData(I2C1, 0x10);
-  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_TRANSMITTED));
-  I2C_GenerateSTOP(I2C1, ENABLE);
+  // 2. Reset
+  if (!BH1750_WriteCmd(0x07)) return ambient_light;
+  Delay_Ms(10);
 
-  Delay_Ms(18);  // 等待测量完成
+  // 3. Continuous H-Res Mode
+  if (!BH1750_WriteCmd(0x10)) return ambient_light;
+  Delay_Ms(200);
 
-  // 读取测量数据
-  I2C_GenerateSTART(I2C1, ENABLE);
-  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_MODE_SELECT));
+  // 4. Read
+  u16 raw = 0;
+  if (!BH1750_ReadRaw(&raw)) return ambient_light;
+  buf[0] = (u8)(raw >> 8);
+  buf[1] = (u8)(raw & 0xFF);
 
-  I2C_Send7bitAddress(I2C1, LIGHT_SENSOR_ADDR, I2C_Direction_Receiver);
-  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED));
+  // 转换为lux值
+  lux = (u16)((((u16)buf[0] << 8) | buf[1]) / 1.2);
 
-  // 读取第一个字节
-  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED));
-  buf[0] = I2C_ReceiveData(I2C1);
-  I2C_AcknowledgeConfig(I2C1, ENABLE);
-
-  // 读取第二个字节
-  while (!I2C_CheckEvent(I2C1, I2C_EVENT_MASTER_BYTE_RECEIVED));
-  buf[1] = I2C_ReceiveData(I2C1);
-  I2C_AcknowledgeConfig(I2C1, DISABLE);
-  I2C_GenerateSTOP(I2C1, ENABLE);
-
-  // 转换为lux值（BH1750公式：(buf[0]<<8 | buf[1])/1.2）
-  lux = (u16)((buf[0] << 8 | buf[1]) / 1.2);
+#if BH1750_DEBUG_VERBOSE
+  BH1750_LOG("Read OK raw=%02X %02X lux=%u", buf[0], buf[1], lux);
+#endif
   return lux;
 }
 
@@ -482,7 +699,7 @@ void Auto_Light_Adjust(void) {
 
   if ((SysTick_GetTick() - auto_light_tick) > AUTO_LIGHT_INTERVAL) {
     ambient_light = Read_Ambient_Light();
-    // 环境光映射PWM：0-1000lux → PWM 100%-5%（线性映射）
+    // 环境光映射PWM：0-1000lux → PWM 100%-3%（线性映射）
     u8 target_warm = 0, target_white = 0;
     if (ambient_light > 1000) {
       ambient_light = 1000;
@@ -724,6 +941,7 @@ int main(void) {
   Touch_Init();        // 触控模块
   TickTimer_Init();    // 1ms系统节拍计时
   I2C1_Init();         // 光感I2C
+  BH1750_SelfTestOnce();// BH1750/I2C自检（建议断开ESP8266，避免与UART1混线）
   UART1_Init(UART_BAUDRATE);  // ESP8266通信
   RGB_Reserve_Init();  // 预留RGB引脚
 
