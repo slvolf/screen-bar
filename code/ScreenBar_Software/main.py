@@ -19,6 +19,7 @@ from PySide6.QtGui import QFont
 
 MIN_PWM = 3
 MAX_PWM = 100
+DEFAULT_BRIGHTNESS = 50  # 开关开启时默认亮度（首次开启）
 
 def get_config_path():
     if getattr(sys, 'frozen', False):
@@ -133,6 +134,8 @@ class LightControlWindow(QMainWindow):
             QLabel {color: #eee;}
             QPushButton {padding: 6px 12px; background: #4080FF; color: white; border: none; border-radius: 4px;}
             QPushButton:hover {background: #3070EE;}
+            QPushButton#off_btn {background: #666; color: #eee;}
+            QPushButton#off_btn:hover {background: #555;}
             QFrame {border: 1px solid #333; border-radius: 6px; padding: 10px; background: #1b1b1b;}
             QLabel#log_label {min-height: 20px; color: #4da3ff;}
             QSlider::groove:horizontal {height: 6px; background: #333; border-radius: 3px;}
@@ -150,6 +153,11 @@ class LightControlWindow(QMainWindow):
         self.white_slider = None
         self.warm_value_label = None
         self.white_value_label = None
+        # 新增：开关状态与上次亮度记录
+        self.warm_switch_btn = None
+        self.white_switch_btn = None
+        self.last_warm_brightness = DEFAULT_BRIGHTNESS  # 暖光上次开启亮度
+        self.last_white_brightness = DEFAULT_BRIGHTNESS  # 白光上次开启亮度
 
         self.load_or_init_config()
         self.build_ui()
@@ -180,6 +188,7 @@ class LightControlWindow(QMainWindow):
         top.addWidget(self.log_label)
         main.addLayout(top)
 
+        # 状态帧（环境光、触控状态、开关按钮在同一行）
         status_frame = QFrame()
         status_layout = QHBoxLayout(status_frame)
         status_layout.setSpacing(18)
@@ -194,17 +203,43 @@ class LightControlWindow(QMainWindow):
             box.addWidget(val)
             return box, val
 
+        # 环境光模块
         amb_box, self.ambient_display = build_block("环境光(lux)", "#65d46e")
+        # 触控状态模块
         touch_box, self.touch_display = build_block("触控状态", "#aaa")
+        # 新增：开关按钮模块（水平布局容纳两个开关）
+        switch_box = QVBoxLayout()
+        switch_title = QLabel("灯光开关")
+        switch_btn_layout = QHBoxLayout()
+        switch_btn_layout.setSpacing(12)
+
+        # 暖光开关
+        self.warm_switch_btn = QPushButton("开启暖光")
+        self.warm_switch_btn.setObjectName("off_btn")  # 初始为关闭样式
+        self.warm_switch_btn.clicked.connect(self.on_warm_switch_clicked)
+        # 白光开关
+        self.white_switch_btn = QPushButton("开启白光")
+        self.white_switch_btn.setObjectName("off_btn")  # 初始为关闭样式
+        self.white_switch_btn.clicked.connect(self.on_white_switch_clicked)
+
+        switch_btn_layout.addWidget(self.warm_switch_btn)
+        switch_btn_layout.addWidget(self.white_switch_btn)
+        switch_box.addWidget(switch_title)
+        switch_box.addLayout(switch_btn_layout)
+
+        # 将三个模块加入同一行
         status_layout.addLayout(amb_box)
         status_layout.addLayout(touch_box)
+        status_layout.addLayout(switch_box)  # 开关按钮加入环境光一行
         status_layout.addStretch()
         main.addWidget(status_frame)
 
+        # 控制帧（仅保留滑块）
         ctrl_frame = QFrame()
         ctrl_layout = QVBoxLayout(ctrl_frame)
         ctrl_layout.setSpacing(14)
 
+        # 原有：滑块调节行
         def build_slider_row(label_text, is_warm):
             row = QHBoxLayout()
             label = QLabel(label_text)
@@ -250,11 +285,19 @@ class LightControlWindow(QMainWindow):
             self.set_slider_value(self.warm_slider, v)
             if self.warm_value_label:
                 self.warm_value_label.setText(str(v))
+            # 同步开关按钮状态
+            self.update_switch_btn_state(self.warm_switch_btn, v != MIN_PWM)
+            if v != MIN_PWM:
+                self.last_warm_brightness = v  # 更新上次亮度
         if "white" in status:
             v = max(MIN_PWM, min(MAX_PWM, int(status["white"])))
             self.set_slider_value(self.white_slider, v)
             if self.white_value_label:
                 self.white_value_label.setText(str(v))
+            # 同步开关按钮状态
+            self.update_switch_btn_state(self.white_switch_btn, v != MIN_PWM)
+            if v != MIN_PWM:
+                self.last_white_brightness = v  # 更新上次亮度
         if "ambient" in status:
             self.ambient_display.setText(str(status["ambient"]))
         if "touch" in status:
@@ -267,10 +310,65 @@ class LightControlWindow(QMainWindow):
     def send_control_cmd(self):
         warm = self.warm_slider.value()
         white = self.white_slider.value()
+        # 同步开关按钮状态
+        self.update_switch_btn_state(self.warm_switch_btn, warm != MIN_PWM)
+        self.update_switch_btn_state(self.white_switch_btn, white != MIN_PWM)
+        # 更新上次亮度
+        if warm != MIN_PWM:
+            self.last_warm_brightness = warm
+        if white != MIN_PWM:
+            self.last_white_brightness = white
+        # 发送指令
         if self.network_thread and self.network_thread.send_cmd(warm, white):
             self.update_log_display(f"已发送: 暖光{warm} | 白光{white}", "green")
         else:
             self.update_log_display("未连接到ESP8266", "red")
+
+    # 暖光开关点击事件
+    def on_warm_switch_clicked(self):
+        current_warm = self.warm_slider.value()
+        if current_warm == MIN_PWM:
+            # 当前关闭，点击开启（恢复上次亮度）
+            self.set_slider_value(self.warm_slider, self.last_warm_brightness)
+            self.warm_value_label.setText(str(self.last_warm_brightness))
+            self.update_log_display(f"暖光已开启（亮度：{self.last_warm_brightness}）", "green")
+        else:
+            # 当前开启，点击关闭（记录当前亮度，设为MIN_PWM）
+            self.last_warm_brightness = current_warm
+            self.set_slider_value(self.warm_slider, MIN_PWM)
+            self.warm_value_label.setText(str(MIN_PWM))
+            self.update_log_display("暖光已关闭", "red")
+        # 发送指令
+        self.send_control_cmd()
+
+    # 白光开关点击事件
+    def on_white_switch_clicked(self):
+        current_white = self.white_slider.value()
+        if current_white == MIN_PWM:
+            # 当前关闭，点击开启（恢复上次亮度）
+            self.set_slider_value(self.white_slider, self.last_white_brightness)
+            self.white_value_label.setText(str(self.last_white_brightness))
+            self.update_log_display(f"白光已开启（亮度：{self.last_white_brightness}）", "green")
+        else:
+            # 当前开启，点击关闭（记录当前亮度，设为MIN_PWM）
+            self.last_white_brightness = current_white
+            self.set_slider_value(self.white_slider, MIN_PWM)
+            self.white_value_label.setText(str(MIN_PWM))
+            self.update_log_display("白光已关闭", "red")
+        # 发送指令
+        self.send_control_cmd()
+
+    # 更新开关按钮样式与文本
+    def update_switch_btn_state(self, btn, is_on):
+        if is_on:
+            btn.setText(f"关闭{btn.text()[2:]}")  # 从“开启暖光”变为“关闭暖光”
+            btn.setObjectName("")  # 移除关闭样式，使用默认开启样式
+        else:
+            btn.setText(f"开启{btn.text()[2:]}")  # 从“关闭暖光”变为“开启暖光”
+            btn.setObjectName("off_btn")  # 设置关闭样式
+        # 刷新样式
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
 
     def closeEvent(self, event):
         if self.network_thread and self.network_thread.isRunning():

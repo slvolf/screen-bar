@@ -141,23 +141,24 @@ volatile u8 g_white_soft_duty = PWM_MIN_DUTY;
 
 // 软件I2C延时 (放慢速度，确保信号稳定)
 static void Soft_I2C_Delay(void) {
-    Delay_Us(50); // 增加延时到50us (约10kHz)，适应10k弱上拉
+    Delay_Us(100); // 进一步放慢到100us，排除速度过快问题
 }
 
 static void Soft_I2C_SDA_OutOD(void) {
+  // 将SDA配置为开漏输出，以配合外部上拉电阻
   GPIO_InitTypeDef GPIO_InitStructure = {0};
   GPIO_InitStructure.GPIO_Pin = I2C_SDA_PIN;
   GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_OD;
   GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
   GPIO_Init(I2C_GPIO_PORT, &GPIO_InitStructure);
+  // 默认释放为高电平（开漏输出+外部上拉）
+  GPIO_SetBits(I2C_GPIO_PORT, I2C_SDA_PIN);
 }
 
 static void Soft_I2C_SDA_InPU(void) {
-  GPIO_InitTypeDef GPIO_InitStructure = {0};
-  GPIO_InitStructure.GPIO_Pin = I2C_SDA_PIN;
-  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
-  GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-  GPIO_Init(I2C_GPIO_PORT, &GPIO_InitStructure);
+  // 为兼容已有调用，保持函数名，但不再切换到输入上拉。
+  // 直接释放总线：开漏输出保持高（由外部上拉拉高），可安全读取ACK/数据。
+  GPIO_SetBits(I2C_GPIO_PORT, I2C_SDA_PIN);
 }
 
 static void Soft_I2C_GPIO_Init(void) {
@@ -165,7 +166,7 @@ static void Soft_I2C_GPIO_Init(void) {
 
   RCC_APB2PeriphClockCmd(I2C_RCC_PORT, ENABLE);
 
-  // SCL：开漏输出
+  // SCL：开漏输出（配合外部上拉）
   GPIO_InitStructure.GPIO_Pin = I2C_SCL_PIN;
   GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_OD;
   GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
@@ -174,9 +175,10 @@ static void Soft_I2C_GPIO_Init(void) {
   // SDA：默认开漏输出（读ACK/读数据时会切换为输入）
   Soft_I2C_SDA_OutOD();
 
-  // 释放总线为高
-  I2C_SCL_H;
-  I2C_SDA_H;
+  // 关键：初始化后立即释放总线为高（均为开漏+外部上拉）
+  // 先拉高SCL，再拉高SDA，确保处于空闲状态
+  GPIO_SetBits(I2C_GPIO_PORT, I2C_SCL_PIN);
+  GPIO_SetBits(I2C_GPIO_PORT, I2C_SDA_PIN);
   Soft_I2C_Delay();
 }
 
@@ -311,11 +313,101 @@ static int BH1750_Detect(void) {
 }
 
 static void BH1750_SelfTestOnce(void) {
-  if (!BH1750_Detect()) {
-    BH1750_LOG("FAIL: No sensor found!");
-    return;
+  u8 i;
+  
+  // 诊断：检查总线空闲电平
+  u8 sda_val = GPIO_ReadInputDataBit(I2C_GPIO_PORT, I2C_SDA_PIN);
+  u8 scl_val = GPIO_ReadInputDataBit(I2C_GPIO_PORT, I2C_SCL_PIN);
+  BH1750_LOG("I2C Bus Check: SDA=%d, SCL=%d (Should be 1,1)", sda_val, scl_val);
+  
+  if (sda_val == 0 || scl_val == 0) {
+      BH1750_LOG("ERROR: Bus stuck LOW! Check pull-ups or wiring.");
+      // 尝试强制复位总线：发送9个时钟脉冲，尝试解死锁
+      // 先确保SDA释放
+      I2C_SDA_H; 
+      Soft_I2C_Delay();
+      for(int k=0; k<9; k++) {
+          I2C_SCL_L; 
+          Soft_I2C_Delay();
+          I2C_SCL_H; 
+          Soft_I2C_Delay();
+      }
+      I2C_SCL_L; // 最后SCL拉低准备
+      Soft_I2C_Delay();
+      I2C_SDA_H; // 释放SDA
+      I2C_SCL_H; // 释放SCL -> 空闲状态
+      Soft_I2C_Delay();
+      
+      // 复位后再次检查
+      sda_val = GPIO_ReadInputDataBit(I2C_GPIO_PORT, I2C_SDA_PIN);
+      scl_val = GPIO_ReadInputDataBit(I2C_GPIO_PORT, I2C_SCL_PIN);
+      BH1750_LOG("Bus Check After Reset: SDA=%d, SCL=%d", sda_val, scl_val);
   }
-  BH1750_LOG("FOUND Sensor addr=0x%02X", g_bh1750_addr >> 1);
+
+  // 1. 尝试标准地址检测
+  for(i = 0; i < 3; i++) {
+    if (BH1750_Detect()) {
+      BH1750_LOG("FOUND Sensor addr=0x%02X", g_bh1750_addr >> 1);
+      return;
+    }
+    Delay_Ms(50);
+  }
+
+  // 2. 如果失败，进行全地址扫描（排除地址错误）
+  BH1750_LOG("Standard detect failed. Scanning all I2C addresses...");
+  for (u8 addr = 1; addr < 127; addr++) {
+      if (BH1750_Ping(addr << 1)) {
+          BH1750_LOG("FOUND Device at 0x%02X", addr);
+          g_bh1750_addr = (addr << 1); // 更新为扫描到的地址
+          return;
+      }
+  }
+
+  BH1750_LOG("FAIL: No sensor found after full scan!");
+
+  // === 绝望模式：盲读测试 ===
+  // 即使没有ACK，也强行发送命令并读取数据
+  // 如果读到 0xFFFF，说明总线一直为高（传感器完全没反应）
+  // 如果读到其他值，说明传感器还在拉动SDA，只是ACK电路坏了
+  BH1750_LOG("Trying BLIND READ (Ignoring NACK)...");
+  
+  // 1. 盲发 Power On
+  Soft_I2C_Start();
+  Soft_I2C_SendByte(0x23 << 1); // 尝试默认地址
+  Soft_I2C_WaitAck(); // 忽略ACK
+  Soft_I2C_SendByte(0x01); // Power On
+  Soft_I2C_WaitAck();
+  Soft_I2C_Stop();
+  Delay_Ms(10);
+
+  // 2. 盲发 Mode Set
+  Soft_I2C_Start();
+  Soft_I2C_SendByte(0x23 << 1);
+  Soft_I2C_WaitAck();
+  Soft_I2C_SendByte(0x10); // H-Res Mode
+  Soft_I2C_WaitAck();
+  Soft_I2C_Stop();
+  Delay_Ms(180); // 等待测量
+
+  // 3. 盲读数据
+  Soft_I2C_Start();
+  Soft_I2C_SendByte((0x23 << 1) | 1); // Read
+  u8 ack_state = Soft_I2C_WaitAck(); // 记录一下ACK状态
+  u8 h = Soft_I2C_ReadByte(1);
+  u8 l = Soft_I2C_ReadByte(0);
+  Soft_I2C_Stop();
+
+  BH1750_LOG("Blind Read Result: ACK=%d, Data=0x%02X%02X", ack_state, h, l);
+  
+  if (h == 0xFF && l == 0xFF) {
+      BH1750_LOG("Result: 0xFFFF -> Bus is floating HIGH. Sensor is DEAD.");
+  } else if (h == 0x00 && l == 0x00) {
+      BH1750_LOG("Result: 0x0000 -> Bus is stuck LOW during read. Sensor is SHORTED.");
+  } else {
+      BH1750_LOG("Result: Valid Data! Sensor is ALIVE (Zombie mode).");
+      // 如果真的读到了数据，强制更新地址并返回成功
+      g_bh1750_addr = (0x23 << 1);
+  }
 }
 
 /*********************************************************************
@@ -688,7 +780,9 @@ u16 Read_Ambient_Light(void) {
 
 /*********************************************************************
  * @函数名    Auto_Light_Adjust
- * @功能      基于环境光自动调光（光越暗，灯越亮）
+ * @功能      基于环境光自动调光（阶梯状 + 色温混合）
+ *            光线越暗：暖光占比多，总亮度高
+ *            光线越亮：白光占比多，总亮度低
  * @返回值    无
  ********************************************************************/
 void Auto_Light_Adjust(void) {
@@ -698,14 +792,45 @@ void Auto_Light_Adjust(void) {
   }
 
   if ((SysTick_GetTick() - auto_light_tick) > AUTO_LIGHT_INTERVAL) {
-    ambient_light = Read_Ambient_Light();
-    // 环境光映射PWM：0-1000lux → PWM 100%-3%（线性映射）
-    u8 target_warm = 0, target_white = 0;
-    if (ambient_light > 1000) {
-      ambient_light = 1000;
+    u16 current_lux = Read_Ambient_Light();
+    
+    // 迟滞处理：只有环境光变化超过阈值（例如20lux）才调整，避免频繁闪烁
+    // 首次运行(ambient_light=0)时不跳过
+    if (ambient_light != 0 && abs((int)current_lux - (int)ambient_light) < 20) {
+        auto_light_tick = SysTick_GetTick();
+        return; 
     }
-    target_warm = 100 - (ambient_light / 10);
-    target_white = 100 - (ambient_light / 10);
+    ambient_light = current_lux;
+
+    u8 target_warm = 0;
+    u8 target_white = 0;
+
+    // 阶梯状调光策略
+    // 极暗环境 (<50 lux): 全力补光，暖色为主护眼
+    if (ambient_light < 50) {
+        target_warm = 80; 
+        target_white = 20;
+    }
+    // 较暗环境 (50-200 lux): 较高亮度，暖白混合
+    else if (ambient_light < 200) {
+        target_warm = 60;
+        target_white = 40;
+    }
+    // 适中环境 (200-500 lux): 中等亮度，偏白光提神
+    else if (ambient_light < 500) {
+        target_warm = 30;
+        target_white = 50;
+    }
+    // 较亮环境 (500-800 lux): 低亮度补光，主白光
+    else if (ambient_light < 800) {
+        target_warm = 10;
+        target_white = 30;
+    }
+    // 极亮环境 (>800 lux): 微弱补光或关闭
+    else {
+        target_warm = PWM_MIN_DUTY;
+        target_white = PWM_MIN_DUTY;
+    }
     
     // 仅灯开启时调整占空比
     if (warm_switch == 1) {
